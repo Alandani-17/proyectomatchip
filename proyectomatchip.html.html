@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cotejador de Redes (Endian vs HZ)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        .match-true { background-color: #d1fae5; color: #065f46; font-weight: bold; text-align: center; }
+        .match-false { background-color: #fee2e2; color: #991b1b; font-weight: bold; text-align: center; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans p-6">
+
+    <div class="max-w-7xl mx-auto bg-white p-6 rounded-xl shadow-md">
+        <h1 class="text-2xl font-bold text-gray-900 mb-2 text-center">🔄 Cotejador de Bases de Redes</h1>
+        <p class="text-sm text-gray-500 text-center mb-6">Sube los archivos de ENDIAN y HZ para contrastar IPs por dirección MAC.</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-blue-500 transition">
+                <label class="block font-semibold mb-2 text-blue-700">1. Base ENDIAN (Excel/CSV)</label>
+                <input type="file" id="fileEndian" accept=".xlsx, .xls, .csv" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-green-500 transition">
+                <label class="block font-semibold mb-2 text-green-700">2. Base HZ (Excel/CSV)</label>
+                <input type="file" id="fileHz" accept=".xlsx, .xls, .csv" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100">
+            </div>
+        </div>
+
+        <div class="text-center mb-6">
+            <button id="btnProcesar" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg shadow transition hidden">
+                ⚡ Procesar y Comparar
+            </button>
+        </div>
+
+        <div id="filtros" class="mb-4 hidden flex justify-end gap-2 text-sm">
+            <button onclick="filtrarTabla('todos')" class="bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded">Mostrar Todos</button>
+            <button onclick="filtrarTabla('errores')" class="bg-red-100 hover:bg-red-200 text-red-800 px-3 py-1 rounded font-medium">Solo Incongruencias</button>
+        </div>
+
+        <div class="overflow-x-auto border border-gray-200 rounded-lg shadow-inner max-h-[600px]">
+            <table class="min-w-full divide-y divide-gray-200 text-sm hidden" id="tablaResultados">
+                <thead class="bg-gray-100 sticky top-0">
+                    <tr>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-700">MAC</th>
+                        <th class="px-4 py-3 text-left font-semibold text-gray-700">Servicio (Endian / HZ)</th>
+                        <th class="px-4 py-3 text-center font-semibold text-gray-700">IP Local</th>
+                        <th class="px-4 py-3 text-center font-semibold text-gray-700">IP Provincial</th>
+                        <th class="px-4 py-3 text-center font-semibold text-gray-700">IP Laboratorio</th>
+                    </tr>
+                </thead>
+                <tbody id="cuerpoTabla" class="bg-white divide-y divide-gray-200">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let datosEndian = [];
+        let datosHz = [];
+
+        // Escuchar la carga de archivos
+        document.getElementById('fileEndian').addEventListener('change', (e) => procesarArchivo(e, 'endian'));
+        document.getElementById('fileHz').addEventListener('change', (e) => procesarArchivo(e, 'hz'));
+
+        function procesarArchivo(evento, tipo) {
+            const file = evento.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                
+                // Convertir a JSON
+                const json = XLSX.utils.sheet_to_json(worksheet);
+                
+                // Normalizar llaves para evitar problemas de mayúsculas/minúsculas/espacios
+                const datosNormalizados = json.map(row => {
+                    let newRow = {};
+                    for (let key in row) {
+                        let normalizedKey = key.trim().toLowerCase().replace(/\s+/g, '');
+                        newRow[normalizedKey] = String(row[key]).trim();
+                    }
+                    return newRow;
+                });
+
+                if (tipo === 'endian') datosEndian = datosNormalizados;
+                if (tipo === 'hz') datosHz = datosNormalizados;
+
+                // Si ambos archivos están cargados, mostrar botón de procesar
+                if (datosEndian.length > 0 && datosHz.length > 0) {
+                    document.getElementById('btnProcesar').classList.remove('hidden');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Función para limpiar y estandarizar la dirección MAC
+        function limpiarMac(mac) {
+            if (!mac) return "";
+            // Extrae solo los caracteres válidos de una MAC (letras, números y dos puntos) por si viene con texto extra
+            let match = mac.match(/([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}/);
+            return match ? match[0].toUpperCase() : mac.toUpperCase().trim();
+        }
+
+        document.getElementById('btnProcesar').addEventListener('click', () => {
+            const cuerpo = document.getElementById('cuerpoTabla');
+            cuerpo.innerHTML = ""; // Limpiar tabla previa
+
+            // Mapear la base de HZ usando la MAC limpia como índice para búsqueda rápida
+            let mapHz = {};
+            datosHz.forEach(item => {
+                let macClean = limpiarMac(item.mac || item.macaddress);
+                if (macClean) mapHz[macClean] = item;
+            });
+
+            // Cruzar con la base de Endian
+            datosEndian.forEach(itemEndian => {
+                let macClean = limpiarMac(itemEndian.mac || itemEndian.macaddress);
+                if (!macClean) return; // Ignorar si no hay MAC
+
+                let itemHz = mapHz[macClean];
+                
+                // Obtener valores o dejar vacío si no existen
+                let servicioEndian = itemEndian.servicio || "No especificado";
+                let servicioHz = itemHz ? (itemHz.servicio || "No especificado") : "<span class='text-red-500 font-semibold'>No encontrado en HZ</span>";
+
+                let ipLocalA = itemEndian.iplocal || "";
+                let ipLocalB = itemHz ? (itemHz.iplocal || "") : "";
+                
+                let ipProvA = itemEndian.ipprovincial || "";
+                let ipProvB = itemHz ? (itemHz.ipprovincial || "") : "";
+
+                let ipLabA = itemEndian.iplaboratorio || "";
+                let ipLabB = itemHz ? (itemHz.iplaboratorio || "") : "";
+
+                // Validaciones de coincidencia (Si no existe en HZ, cuenta como error)
+                let matchLocal = (ipLocalA === ipLocalB) && itemHz;
+                let matchProv = (ipProvA === ipProvB) && itemHz;
+                let matchLab = (ipLabA === ipLabB) && itemHz;
+
+                let tieneErrores = !matchLocal || !matchProv || !matchLab;
+
+                // Construcción de la fila de la tabla
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50 row-resultado";
+                tr.setAttribute('data-error', tieneErrores ? "true" : "false");
+
+                tr.innerHTML = `
+                    <td class="px-4 py-3 font-mono text-xs text-gray-900 font-semibold">${macClean}</td>
+                    <td class="px-4 py-3 text-xs text-gray-600">
+                        <div class="font-semibold text-blue-700">E: ${servicioEndian}</div>
+                        <div class="text-green-700">H: ${servicioHz}</div>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-center ${matchLocal ? 'match-true' : 'match-false'}">
+                        <div>E: ${ipLocalA || '-'}</div>
+                        <div class="border-t border-opacity-20 border-black">H: ${ipLocalB || '-'}</div>
+                        <div class="text-[10px] mt-1">${matchLocal ? '✓ Match' : '✗ Error'}</div>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-center ${matchProv ? 'match-true' : 'match-false'}">
+                        <div>E: ${ipProvA || '-'}</div>
+                        <div class="border-t border-opacity-20 border-black">H: ${ipProvB || '-'}</div>
+                        <div class="text-[10px] mt-1">${matchProv ? '✓ Match' : '✗ Error'}</div>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-center ${matchLab ? 'match-true' : 'match-false'}">
+                        <div>E: ${ipLabA || '-'}</div>
+                        <div class="border-t border-opacity-20 border-black">H: ${ipLabB || '-'}</div>
+                        <div class="text-[10px] mt-1">${matchLab ? '✓ Match' : '✗ Error'}</div>
+                    </td>
+                `;
+                cuerpo.appendChild(tr);
+            });
+
+            // Mostrar elementos ocultos
+            document.getElementById('tablaResultados').classList.remove('hidden');
+            document.getElementById('filtros').classList.remove('hidden');
+        });
+
+        function filtrarTabla(tipo) {
+            const filas = document.querySelectorAll('.row-resultado');
+            filas.forEach(fila => {
+                if (tipo === 'errores') {
+                    if (fila.getAttribute('data-error') === 'true') {
+                        fila.style.display = '';
+                    } else {
+                        fila.style.display = 'none';
+                    }
+                } else {
+                    fila.style.display = '';
+                }
+            });
+        }
+    </script>
+</body>
+</html>
